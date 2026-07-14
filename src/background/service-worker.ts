@@ -1,5 +1,5 @@
 import { storage } from "../storage";
-import { Config, LogAction } from "../types";
+import { Config, LogAction, OffscreenRequest, OffscreenResponse, SnatchRow } from "../types";
 
 const ALARM_NAME = "seed-purge";
 const CYCLE_MINUTES = 60;
@@ -9,6 +9,8 @@ const MAX_PAGES = 100;
 const FILELIST_ORIGIN = "https://filelist.io";
 const SNATCHLIST_URL = `${FILELIST_ORIGIN}/snatchlist.php`;
 const DETAILS_URL = `${FILELIST_ORIGIN}/details.php`;
+
+const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 
 /** Guards against a second run overlapping the current one. */
 let running = false;
@@ -34,6 +36,34 @@ async function log(
 async function setupAlarm(): Promise<void> {
     await chrome.alarms.clear(ALARM_NAME);
     chrome.alarms.create(ALARM_NAME, { periodInMinutes: CYCLE_MINUTES });
+}
+
+// ---- offscreen HTML parsing --------------------------------------------
+// Service workers have no DOM, so DOMParser lives in an offscreen document.
+
+async function ensureOffscreen(): Promise<void> {
+    if (await chrome.offscreen.hasDocument()) return;
+    await chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: [chrome.offscreen.Reason.DOM_PARSER],
+        justification: "Parse filelist.io HTML pages (no DOM in service worker).",
+    });
+}
+
+async function closeOffscreen(): Promise<void> {
+    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+}
+
+async function parseSnatchPage(html: string): Promise<SnatchRow[] | null> {
+    const req: OffscreenRequest = { target: "offscreen", kind: "snatch", html };
+    const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
+    return res?.kind === "snatch" ? res.rows : null;
+}
+
+async function parseDetailsName(html: string): Promise<string | null> {
+    const req: OffscreenRequest = { target: "offscreen", kind: "details", html };
+    const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
+    return res?.kind === "details" ? res.name : null;
 }
 
 // ---- filelist session ---------------------------------------------------
@@ -98,46 +128,6 @@ function matchTorrent(torrents: QbitTorrent[], fullName: string): MatchResult {
 
 // ---- snatchlist scrape --------------------------------------------------
 
-interface SnatchRow {
-    tid: string;
-    /** "Seed Time Left" value, e.g. "Done" or "---" or an elapsed string. */
-    seedTimeLeft: string;
-    /** "Seed Time" elapsed value (context only). */
-    seedTime: string;
-}
-
-function idFromHref(href: string | null): string | null {
-    if (!href) return null;
-    const m = href.match(/[?&]id=(\d+)/);
-    return m ? m[1] : null;
-}
-
-/**
- * Parse one snatchlist page's rows. Returns null when the expected table is
- * absent (session likely expired / redirected to login).
- */
-function parseSnatchPage(html: string): SnatchRow[] | null {
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const stlSpans = doc.querySelectorAll("[title='Seed Time Left']");
-    if (stlSpans.length === 0) return null;
-
-    const rows: SnatchRow[] = [];
-    for (const span of Array.from(stlSpans)) {
-        const tr = span.closest("tr");
-        if (!tr) continue;
-        const link = tr.querySelector<HTMLAnchorElement>("td:nth-child(2) a");
-        const tid = idFromHref(link?.getAttribute("href") ?? null);
-        if (!tid) continue;
-        const seedTime = tr.querySelector("[title='Seed Time']")?.textContent?.trim() ?? "";
-        rows.push({
-            tid,
-            seedTimeLeft: span.textContent?.trim() ?? "",
-            seedTime,
-        });
-    }
-    return rows;
-}
-
 /**
  * Walk snatchlist pages until a page adds no new tids (wrap-around stop) or
  * MAX_PAGES. Returns null on session-expired / abort.
@@ -158,7 +148,7 @@ async function walkSnatchlist(uid: string): Promise<SnatchRow[] | null> {
         if (!resp.ok || resp.url.includes("login.php")) return null;
 
         const html = await resp.text();
-        const rows = parseSnatchPage(html);
+        const rows = await parseSnatchPage(html);
         if (rows === null) return null; // table absent → session expired
 
         let added = 0;
@@ -180,12 +170,7 @@ async function fetchDetailsName(tid: string): Promise<string | null> {
         const resp = await fetch(url, { credentials: "include" });
         if (!resp.ok) return null;
         const html = await resp.text();
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const h4 =
-            doc.querySelector("#maincolumn > div:nth-child(1) > div.cblock-header > h4") ??
-            doc.querySelector(".cblock-header h4");
-        const name = h4?.textContent?.trim();
-        return name && name.length > 0 ? name : null;
+        return await parseDetailsName(html);
     } catch {
         return null;
     }
@@ -212,6 +197,9 @@ async function run(): Promise<void> {
             await log("abort", { name: `qBit unreachable at ${config.qbitUrl}` });
             return;
         }
+
+        // Spin up the offscreen parser before any HTML parsing.
+        await ensureOffscreen();
 
         // 3. walk snatchlist
         const rows = await walkSnatchlist(uid);
@@ -251,6 +239,7 @@ async function run(): Promise<void> {
             }
         }
     } finally {
+        await closeOffscreen();
         running = false;
     }
 }

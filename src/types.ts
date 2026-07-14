@@ -30,3 +30,21 @@ export interface StorageData {
     config: Config;
     log: LogEntry[];
 }
+
+export interface SnatchRow {
+    tid: string;
+    /** "Seed Time Left" value, e.g. "Done" or "---" or an elapsed string. */
+    seedTimeLeft: string;
+    /** "Seed Time" elapsed value (context only). */
+    seedTime: string;
+}
+
+/** Worker → offscreen request to parse a filelist HTML page. */
+export type OffscreenRequest =
+    | { target: "offscreen"; kind: "snatch"; html: string }
+    | { target: "offscreen"; kind: "details"; html: string };
+
+/** offscreen → worker responses. `null` signals an unparseable/expired page. */
+export type OffscreenResponse =
+    | { kind: "snatch"; rows: SnatchRow[] | null }
+    | { kind: "details"; name: string | null };
