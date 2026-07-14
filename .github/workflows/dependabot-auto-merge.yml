@@ -1,0 +1,17 @@
+name: Dependabot auto-merge
+
+on:
+    pull_request_review:
+        types: [submitted]
+
+permissions:
+    contents: read
+
+jobs:
+    merge:
+        permissions:
+            contents: write
+            pull-requests: write
+        uses: dustfeather/shared-workflows/.github/workflows/dependabot-auto-merge.yml@v4
+        with:
+            runner: arc-df-shared-workflows

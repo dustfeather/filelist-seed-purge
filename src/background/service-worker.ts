@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { Config, LogAction, OffscreenRequest, OffscreenResponse, SnatchRow } from "../types";
+import { parseSnatchDom, parseDetailsDom } from "../parse";
 
 const ALARM_NAME = "seed-purge";
 const CYCLE_MINUTES = 60;
@@ -38,10 +39,14 @@ async function setupAlarm(): Promise<void> {
     chrome.alarms.create(ALARM_NAME, { periodInMinutes: CYCLE_MINUTES });
 }
 
-// ---- offscreen HTML parsing --------------------------------------------
-// Service workers have no DOM, so DOMParser lives in an offscreen document.
+// ---- HTML parsing (cross-browser) --------------------------------------
+// Chrome MV3 runs the background as a service worker (no DOM) → parse in an
+// offscreen document. Firefox runs it as an event page (has DOM) and has no
+// chrome.offscreen API → parse inline. Feature-detect and branch.
+const HAS_OFFSCREEN = typeof chrome !== "undefined" && !!chrome.offscreen;
 
 async function ensureOffscreen(): Promise<void> {
+    if (!HAS_OFFSCREEN) return;
     if (await chrome.offscreen.hasDocument()) return;
     await chrome.offscreen.createDocument({
         url: OFFSCREEN_URL,
@@ -51,16 +56,19 @@ async function ensureOffscreen(): Promise<void> {
 }
 
 async function closeOffscreen(): Promise<void> {
+    if (!HAS_OFFSCREEN) return;
     if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
 }
 
 async function parseSnatchPage(html: string): Promise<SnatchRow[] | null> {
+    if (!HAS_OFFSCREEN) return parseSnatchDom(html); // Firefox event page
     const req: OffscreenRequest = { target: "offscreen", kind: "snatch", html };
     const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
     return res?.kind === "snatch" ? res.rows : null;
 }
 
 async function parseDetailsName(html: string): Promise<string | null> {
+    if (!HAS_OFFSCREEN) return parseDetailsDom(html); // Firefox event page
     const req: OffscreenRequest = { target: "offscreen", kind: "details", html };
     const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
     return res?.kind === "details" ? res.name : null;

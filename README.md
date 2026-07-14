@@ -1,6 +1,6 @@
 # FileList Seed-Purge
 
-A private, unpacked Chrome MV3 extension that runs in the background, scrapes your
+A **Chrome & Firefox** MV3 extension that runs in the background, scrapes your
 [filelist.io](https://filelist.io) **snatchlist** for torrents whose seeding
 requirement is met (`Seed Time Left = Done`), and deletes the matching torrent
 **and its data** from a local [qBittorrent](https://www.qbittorrent.org/) via its
@@ -30,8 +30,10 @@ Every 60 minutes (via `chrome.alarms`) the background service worker:
 7. On a unique match: if **dry-run** is on, logs `would-purge`; otherwise
    `POST /api/v2/torrents/delete` with `deleteFiles=true`.
 
-HTML parsing happens in a `chrome.offscreen` document — MV3 service workers have
-no DOM, so `DOMParser` isn't available in the worker itself.
+HTML parsing is cross-browser: on Chrome the worker is a DOM-less service worker,
+so parsing runs in a `chrome.offscreen` document; on Firefox the background is an
+event page (which has a DOM), so it parses inline. The worker feature-detects
+`chrome.offscreen` and branches automatically.
 
 ### Safety
 
@@ -42,17 +44,32 @@ no DOM, so `DOMParser` isn't available in the worker itself.
 - Only torrents in the configured category, already fully downloaded, are ever
   considered.
 
-## Install (unpacked)
+## Install
+
+### From a release
+
+Grab the latest [release](../../releases): `…-chrome-vX.Y.Z.zip` for Chrome,
+`…-firefox-vX.Y.Z.xpi` for Firefox. Releases are built automatically by CI on
+every push to `main` (see [Releases & CI](#releases--ci)).
+
+- **Chrome:** unzip, then `chrome://extensions` → **Developer mode** → **Load
+  unpacked** → select the unzipped folder.
+- **Firefox:** `about:debugging#/runtime/this-firefox` → **Load Temporary
+  Add-on** → select the `.xpi` (temporary install; permanent install requires an
+  AMO-signed build).
+
+### From source
 
 ```sh
 pnpm install
-pnpm build          # outputs to dist/
+pnpm build          # single dist/ works in both browsers
 ```
 
-1. Open `chrome://extensions`, enable **Developer mode**.
-2. **Load unpacked** → select the `dist/` folder.
-3. Be logged in to filelist.io in the same browser profile.
-4. Have qBittorrent's WebUI running locally (default `http://127.0.0.1:8181`).
+Then load `dist/` unpacked as above.
+
+**Either way:**
+- Be logged in to filelist.io in the same browser profile.
+- Have qBittorrent's WebUI running locally (default `http://127.0.0.1:8181`).
 
 > qBittorrent's **localhost auth-bypass** (Options → Web UI → "Bypass
 > authentication for clients on localhost") lets the extension call the API with
@@ -85,7 +102,21 @@ pnpm typecheck      # tsc --noEmit
 A `.githooks/pre-commit` gate runs `typecheck` on every commit
 (`git config core.hooksPath .githooks`, wired via the `prepare` script).
 
-**Stack:** Manifest V3, TypeScript, Vite, `@crxjs/vite-plugin`, pnpm.
+**Stack:** Manifest V3, TypeScript, Vite, `@crxjs/vite-plugin`, pnpm. One `dist/`
+targets both browsers — a small Vite plugin adds Firefox's `background.scripts`
+alongside Chrome's `service_worker`.
+
+## Releases & CI
+
+CI uses shared reusable workflows from
+[`dustfeather/shared-workflows`](https://github.com/dustfeather/shared-workflows):
+
+- **PR checks** (`pr-checks.yml`): lint/typecheck/tests/build + automated review.
+- **Release** (`release.yml`): on every push to `main`, auto-bumps the patch
+  version, tags it, builds, and publishes a GitHub Release with the Chrome
+  `.zip` and Firefox `.xpi` (plus a source archive). Optional Chrome Web Store /
+  AMO publish jobs run when the corresponding store secrets are configured and
+  no-op otherwise.
 
 ## Privacy
 
