@@ -196,12 +196,20 @@ async function fetchDetailsName(tid: string): Promise<string | null> {
 
 // ---- say thanks ---------------------------------------------------------
 // Replicates the details-page #thanks_button onclick (say_thanks(id)), which
-// POSTs to thanks.php. The worker has no live page, so we fire the request
-// directly. Dedup is log-based: a prior "thanked" entry for a tid means skip.
-// NOTE: the log is a 500-entry ring buffer, so a tid can age out and be
-// re-thanked over time — accepted tradeoff (no dedicated storage key).
+// POSTs `action=add` to thanks.php. The worker has no live page, so we fire the
+// request directly (no Referer needed — the session cookie authorises it).
+//
+// thanks.php replies with JSON. Crucially, a bare 200 is NOT success: adding an
+// already-thanked torrent returns `{"status":false,"err":"..."}`. So we don't
+// trust the add response — we VERIFY by reading the thankers list
+// (`action=list` → `{"list":"<a href='userdetails.php?id=UID'>...","status":true}`)
+// and checking our own uid is in it. Only then do we log "thanked".
+//
+// The server rejects duplicate thanks, so re-POSTing is a harmless no-op; the
+// log-based skip below is just an optimisation, and the list verify self-heals
+// any tid whose "thanked" entry has aged out of the 500-entry log.
 
-/** tids already thanked, per existing "thanked" log entries. */
+/** tids already recorded as thanked in the log (skip re-processing). */
 async function thankedTids(): Promise<Set<string>> {
     const set = new Set<string>();
     for (const entry of await storage.getLog()) {
@@ -210,34 +218,48 @@ async function thankedTids(): Promise<Set<string>> {
     return set;
 }
 
-/** POST the "say thanks" action for one torrent id. Returns true on 2xx. */
-async function sayThanks(tid: string): Promise<boolean> {
+/** POST one `action` to thanks.php for a torrent; returns the parsed JSON or null. */
+async function thanksPost(
+    action: "add" | "list",
+    tid: string,
+): Promise<{ status?: boolean; list?: string } | null> {
     try {
         const resp = await fetch(THANKS_URL, {
             method: "POST",
             credentials: "include",
             headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest",
+                Accept: "application/json, text/javascript, */*; q=0.01",
             },
-            body: `action=add&ajax=1&torrentid=${encodeURIComponent(tid)}`,
+            body: `action=${action}&ajax=1&torrentid=${encodeURIComponent(tid)}`,
         });
-        return resp.ok;
+        if (!resp.ok) return null;
+        return await resp.json();
     } catch {
-        return false;
+        return null;
     }
 }
 
+/** True iff our uid appears in the torrent's current thankers list. */
+async function isThankedByUs(tid: string, uid: string): Promise<boolean> {
+    const res = await thanksPost("list", tid);
+    // Thankers are `<a href='userdetails.php?id=UID'>`. Trailing quote anchors
+    // the id so uid 110548 doesn't match a 1105489 prefix.
+    return !!res?.list?.includes(`userdetails.php?id=${uid}'`);
+}
+
 /**
- * Thank every snatched row not already thanked. Always on, independent of
- * dry-run (non-destructive). On failure we don't record "thanked", so the
- * torrent is retried next cycle.
+ * Thank every snatched row not already logged as thanked, then verify against
+ * the thankers list before logging. Always on, independent of dry-run
+ * (non-destructive). Unverified rows log "thanks-error" and retry next cycle.
  */
-async function thankAll(rows: SnatchRow[]): Promise<void> {
+async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
     const already = await thankedTids();
     for (const row of rows) {
         if (already.has(row.tid)) continue;
-        const ok = await sayThanks(row.tid);
+        await thanksPost("add", row.tid); // fire the thank (idempotent server-side)
+        const ok = await isThankedByUs(row.tid, uid); // verify before logging
         await log(ok ? "thanked" : "thanks-error", { tid: row.tid });
         await sleep(THANKS_DELAY_MS);
     }
@@ -306,8 +328,9 @@ async function run(): Promise<void> {
             }
         }
 
-        // 8. say-thanks for every snatched torrent (once — dedup via log scan).
-        await thankAll(rows);
+        // 8. say-thanks for every snatched torrent, verified against the
+        //    thankers list before logging (dedup via log scan).
+        await thankAll(rows, uid);
     } finally {
         await closeOffscreen();
         running = false;
