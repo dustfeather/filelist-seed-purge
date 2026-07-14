@@ -222,7 +222,7 @@ async function thankedTids(): Promise<Set<string>> {
 async function thanksPost(
     action: "add" | "list",
     tid: string,
-): Promise<{ status?: boolean; list?: string } | null> {
+): Promise<{ status?: boolean; list?: string; err?: string } | null> {
     try {
         const resp = await fetch(THANKS_URL, {
             method: "POST",
@@ -241,9 +241,8 @@ async function thanksPost(
     }
 }
 
-/** True iff our uid appears in the torrent's current thankers list. */
-async function isThankedByUs(tid: string, uid: string): Promise<boolean> {
-    const res = await thanksPost("list", tid);
+/** Does our uid appear in this thankers-list response? */
+function listHasUid(res: { list?: string } | null, uid: string): boolean {
     // Thankers are `<a href='userdetails.php?id=UID'>`. Trailing quote anchors
     // the id so uid 110548 doesn't match a 1105489 prefix.
     return !!res?.list?.includes(`userdetails.php?id=${uid}'`);
@@ -252,15 +251,27 @@ async function isThankedByUs(tid: string, uid: string): Promise<boolean> {
 /**
  * Thank every snatched row not already logged as thanked, then verify against
  * the thankers list before logging. Always on, independent of dry-run
- * (non-destructive). Unverified rows log "thanks-error" and retry next cycle.
+ * (non-destructive). Unverified rows log "thanks-error" carrying the server's
+ * response (for diagnosis) and retry next cycle.
  */
 async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
     const already = await thankedTids();
     for (const row of rows) {
         if (already.has(row.tid)) continue;
-        await thanksPost("add", row.tid); // fire the thank (idempotent server-side)
-        const ok = await isThankedByUs(row.tid, uid); // verify before logging
-        await log(ok ? "thanked" : "thanks-error", { tid: row.tid });
+        const add = await thanksPost("add", row.tid); // fire the thank (idempotent)
+        const list = await thanksPost("list", row.tid); // read back to verify
+        if (listHasUid(list, uid)) {
+            await log("thanked", { tid: row.tid });
+        } else {
+            const detail = add?.err
+                ? `add err: ${add.err}`
+                : add === null
+                  ? "add: no/invalid response"
+                  : list === null
+                    ? "list: no/invalid response"
+                    : `not in list (add status=${add.status})`;
+            await log("thanks-error", { tid: row.tid, name: detail });
+        }
         await sleep(THANKS_DELAY_MS);
     }
 }
