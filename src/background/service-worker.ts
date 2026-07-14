@@ -276,7 +276,7 @@ function listHasUid(res: ThanksResult, uid: string): boolean {
 }
 
 /**
- * Thank every snatched row not already logged as thanked, verifying membership
+ * Thank each given row (Done torrents) not already logged as thanked, verifying membership
  * before logging. A successful `add` already returns the thankers list, so we
  * only spend a second `list` request when `add` didn't confirm us — this halves
  * action spend against the hourly cap. On hitting the cap we stop the run
@@ -386,9 +386,9 @@ async function run(): Promise<void> {
             }
         }
 
-        // 8. say-thanks for every snatched torrent, verified against the
-        //    thankers list before logging (dedup via log scan).
-        await thankAll(rows, uid);
+        // 8. say-thanks for the Done torrents, verified against the thankers
+        //    list before logging (dedup via log scan).
+        await thankAll(done, uid);
     } finally {
         await closeOffscreen();
         running = false;
