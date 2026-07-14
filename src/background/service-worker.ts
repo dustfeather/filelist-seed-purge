@@ -5,11 +5,13 @@ import { parseSnatchDom, parseDetailsDom } from "../parse";
 const ALARM_NAME = "seed-purge";
 const CYCLE_MINUTES = 60;
 const PAGE_DELAY_MS = 1500;
+const THANKS_DELAY_MS = 1000;
 const MAX_PAGES = 100;
 
 const FILELIST_ORIGIN = "https://filelist.io";
 const SNATCHLIST_URL = `${FILELIST_ORIGIN}/snatchlist.php`;
 const DETAILS_URL = `${FILELIST_ORIGIN}/details.php`;
+const THANKS_URL = `${FILELIST_ORIGIN}/thanks.php`;
 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 
@@ -192,6 +194,55 @@ async function fetchDetailsName(tid: string): Promise<string | null> {
     }
 }
 
+// ---- say thanks ---------------------------------------------------------
+// Replicates the details-page #thanks_button onclick (say_thanks(id)), which
+// POSTs to thanks.php. The worker has no live page, so we fire the request
+// directly. Dedup is log-based: a prior "thanked" entry for a tid means skip.
+// NOTE: the log is a 500-entry ring buffer, so a tid can age out and be
+// re-thanked over time — accepted tradeoff (no dedicated storage key).
+
+/** tids already thanked, per existing "thanked" log entries. */
+async function thankedTids(): Promise<Set<string>> {
+    const set = new Set<string>();
+    for (const entry of await storage.getLog()) {
+        if (entry.action === "thanked") set.add(entry.tid);
+    }
+    return set;
+}
+
+/** POST the "say thanks" action for one torrent id. Returns true on 2xx. */
+async function sayThanks(tid: string): Promise<boolean> {
+    try {
+        const resp = await fetch(THANKS_URL, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            body: `action=add&ajax=1&torrentid=${encodeURIComponent(tid)}`,
+        });
+        return resp.ok;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Thank every snatched row not already thanked. Always on, independent of
+ * dry-run (non-destructive). On failure we don't record "thanked", so the
+ * torrent is retried next cycle.
+ */
+async function thankAll(rows: SnatchRow[]): Promise<void> {
+    const already = await thankedTids();
+    for (const row of rows) {
+        if (already.has(row.tid)) continue;
+        const ok = await sayThanks(row.tid);
+        await log(ok ? "thanked" : "thanks-error", { tid: row.tid });
+        await sleep(THANKS_DELAY_MS);
+    }
+}
+
 // ---- run flow -----------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -254,6 +305,9 @@ async function run(): Promise<void> {
                 await log("abort", { tid: row.tid, name: `delete failed: ${fullName}`, seedTime: row.seedTime, hash: match.hash });
             }
         }
+
+        // 8. say-thanks for every snatched torrent (once — dedup via log scan).
+        await thankAll(rows);
     } finally {
         await closeOffscreen();
         running = false;

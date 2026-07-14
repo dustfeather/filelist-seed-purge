@@ -173,6 +173,14 @@ td.name {
     color: var(--muted);
 }
 
+.act-thanked {
+    color: var(--ok);
+}
+
+.act-thanks-error {
+    color: var(--muted);
+}
+
 .act-abort {
     color: var(--purge);
 }

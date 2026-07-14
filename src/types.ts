@@ -13,6 +13,8 @@ export type LogAction =
     | "skip-nomatch"
     | "skip-ambiguous"
     | "skip-fetcherror"
+    | "thanked"
+    | "thanks-error"
     | "abort"
     | "info";
 
