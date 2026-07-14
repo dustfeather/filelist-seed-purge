@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FileList Seed-Purge</title>
+    <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+    <header>
+        <h1>Seed-Purge</h1>
+        <span id="dryBadge" class="badge">dry-run</span>
+    </header>
+
+    <section class="config">
+        <label class="field">
+            <span>qBit URL</span>
+            <input type="text" id="qbitUrl" spellcheck="false" autocomplete="off" />
+        </label>
+        <label class="field">
+            <span>Category</span>
+            <input type="text" id="category" spellcheck="false" autocomplete="off" />
+        </label>
+        <label class="check">
+            <input type="checkbox" id="dryRun" />
+            <span>Dry-run (log only, never delete)</span>
+        </label>
+    </section>
+
+    <section class="logHead">
+        <span id="logCount">0 entries</span>
+        <button id="clearBtn" type="button">Clear</button>
+    </section>
+
+    <div class="logWrap">
+        <table id="logTable">
+            <thead>
+                <tr>
+                    <th>time</th>
+                    <th>action</th>
+                    <th>name</th>
+                </tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+        </table>
+    </div>
+
+    <script type="module" src="popup.ts"></script>
+</body>
+</html>

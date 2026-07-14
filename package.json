@@ -1,0 +1,27 @@
+{
+    "name": "filelist-seed-purge",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Private MV3 extension: purge Done-seeding filelist.io torrents from local qBittorrent.",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "typecheck": "tsc --noEmit",
+        "prepare": "git config core.hooksPath .githooks || true"
+    },
+    "devDependencies": {
+        "@crxjs/vite-plugin": "^2.7.1",
+        "@types/chrome": "^0.2.0",
+        "typescript": "^6.0.3",
+        "vite": "^8.1.4"
+    },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "esbuild"
+        ],
+        "overrides": {
+            "rollup@>=2 <2.80": ">=2.80.0"
+        }
+    }
+}

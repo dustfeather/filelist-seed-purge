@@ -1,0 +1,110 @@
+{
+  "communities": {
+    "0": [
+      "graphify_git_init",
+      "graphify_llm_backend",
+      "graphify_post_commit_hook",
+      "graphify_vault_graphify_sh"
+    ],
+    "1": [
+      "graphify_federated_global_graph",
+      "graphify_filelist_seeder",
+      "graphify_knowledge_graph"
+    ],
+    "2": [
+      "graphify_ast_extraction",
+      "graphify_graphify_tool"
+    ]
+  },
+  "cohesion": {
+    "0": 0.5,
+    "1": 0.6666666666666666,
+    "2": 1.0
+  },
+  "gods": [
+    {
+      "id": "graphify_knowledge_graph",
+      "label": "Knowledge Graph",
+      "degree": 4
+    },
+    {
+      "id": "graphify_graphify_tool",
+      "label": "Graphify Command",
+      "degree": 3
+    },
+    {
+      "id": "graphify_vault_graphify_sh",
+      "label": "vault-graphify.sh Script",
+      "degree": 3
+    },
+    {
+      "id": "graphify_post_commit_hook",
+      "label": "Post-Commit Hook",
+      "degree": 3
+    },
+    {
+      "id": "graphify_federated_global_graph",
+      "label": "Federated Global Graph",
+      "degree": 1
+    },
+    {
+      "id": "graphify_ast_extraction",
+      "label": "AST-Based Extraction",
+      "degree": 1
+    },
+    {
+      "id": "graphify_llm_backend",
+      "label": "LLM Backend Extraction",
+      "degree": 1
+    },
+    {
+      "id": "graphify_filelist_seeder",
+      "label": "filelist-seeder Project",
+      "degree": 1
+    },
+    {
+      "id": "graphify_git_init",
+      "label": "Git Repository Initialization",
+      "degree": 1
+    }
+  ],
+  "surprises": [
+    {
+      "source": "Post-Commit Hook",
+      "target": "Graphify Command",
+      "source_files": [
+        "graphify.md",
+        "graphify.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "calls",
+      "note": "Bridges community 2 \u2192 community 0"
+    },
+    {
+      "source": "Graphify Command",
+      "target": "Knowledge Graph",
+      "source_files": [
+        "graphify.md",
+        "graphify.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "note": "Bridges community 2 \u2192 community 1"
+    },
+    {
+      "source": "vault-graphify.sh Script",
+      "target": "Knowledge Graph",
+      "source_files": [
+        "graphify.md",
+        "graphify.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "note": "Bridges community 1 \u2192 community 0"
+    }
+  ],
+  "tokens": {
+    "input": 25283,
+    "output": 3362
+  }
+}
