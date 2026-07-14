@@ -79,16 +79,24 @@ interface QbitTorrent {
     hash: string;
     name: string;
     category: string;
+    /** 0..1 download fraction; 1 = fully downloaded (seeding or stopped-complete). */
+    progress: number;
 }
 
-/** Fetch the category's torrents from qBit. Returns null on any failure/non-200. */
+/**
+ * Fetch the category's torrents from qBit, keeping only fully-downloaded ones
+ * (progress === 1 → seeding or stopped-complete). Still-downloading torrents
+ * (progress < 1) can't have finished seeding, so they're excluded from matching.
+ * Returns null on any failure/non-200.
+ */
 async function fetchQbitTorrents(config: Config): Promise<QbitTorrent[] | null> {
     const base = config.qbitUrl.replace(/\/+$/, "");
     const url = `${base}/api/v2/torrents/info?category=${encodeURIComponent(config.category)}`;
     try {
         const resp = await fetch(url);
         if (!resp.ok) return null;
-        return (await resp.json()) as QbitTorrent[];
+        const all = (await resp.json()) as QbitTorrent[];
+        return all.filter((t) => t.progress === 1);
     } catch {
         return null;
     }
@@ -210,7 +218,7 @@ async function run(): Promise<void> {
 
         // 4. eligible = Seed Time Left === "done"
         const done = rows.filter((r) => r.seedTimeLeft.trim().toLowerCase() === "done");
-        await log("info", { name: `run: ${rows.length} snatched, ${done.length} done, dryRun=${config.dryRun}` });
+        await log("info", { name: `run: ${rows.length} snatched, ${done.length} done, ${torrents.length} qBit-complete, dryRun=${config.dryRun}` });
 
         // 5-7. per Done row: resolve full name, match, purge
         for (const row of done) {
