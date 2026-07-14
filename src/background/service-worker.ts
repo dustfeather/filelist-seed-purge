@@ -221,7 +221,12 @@ async function thankedTids(): Promise<Set<string>> {
 type ThanksJson = { status?: boolean; list?: string; err?: string };
 type ThanksResult =
     | { ok: true; data: ThanksJson }
-    | { ok: false; reason: string };
+    | { ok: false; reason: string; rateLimited?: boolean };
+
+// filelist caps actions per account per hour. Over the cap, thanks.php returns
+// an authenticated HTTP 200 HTML page (not JSON) whose error block reads
+// "Numarul maxim permis de actiuni ... Reveniti peste o ora" — a silent 429.
+const RATE_LIMIT_MARKER = "maxim permis de actiuni";
 
 /** Collapse whitespace and cap a response body for a one-line log field. */
 function snippet(text: string): string {
@@ -231,8 +236,8 @@ function snippet(text: string): string {
 
 /**
  * POST one `action` to thanks.php. On failure the reason distinguishes the
- * cases that actually matter: a network throw, a non-2xx status (e.g. 302 to
- * login, 403/503 from Cloudflare), or a 200 whose body isn't JSON (a login or
+ * cases that actually matter: a network throw, the account hourly action cap
+ * (`rateLimited`), a non-2xx status, or a 200 whose body isn't JSON (a login or
  * challenge HTML page) — each carrying a snippet of what came back.
  */
 async function thanksPost(action: "add" | "list", tid: string): Promise<ThanksResult> {
@@ -252,6 +257,9 @@ async function thanksPost(action: "add" | "list", tid: string): Promise<ThanksRe
         return { ok: false, reason: `network error: ${e instanceof Error ? e.message : String(e)}` };
     }
     const text = await resp.text().catch(() => "");
+    if (text.includes(RATE_LIMIT_MARKER)) {
+        return { ok: false, reason: "account hourly action cap reached", rateLimited: true };
+    }
     if (!resp.ok) return { ok: false, reason: `HTTP ${resp.status}: ${snippet(text)}` };
     try {
         return { ok: true, data: JSON.parse(text) as ThanksJson };
@@ -260,7 +268,7 @@ async function thanksPost(action: "add" | "list", tid: string): Promise<ThanksRe
     }
 }
 
-/** Does our uid appear in this thankers-list response? */
+/** Does our uid appear in this response's thankers list? */
 function listHasUid(res: ThanksResult, uid: string): boolean {
     // Thankers are `<a href='userdetails.php?id=UID'>`. Trailing quote anchors
     // the id so uid 110548 doesn't match a 1105489 prefix.
@@ -268,25 +276,45 @@ function listHasUid(res: ThanksResult, uid: string): boolean {
 }
 
 /**
- * Thank every snatched row not already logged as thanked, then verify against
- * the thankers list before logging. Always on, independent of dry-run
- * (non-destructive). Unverified rows log "thanks-error" carrying the specific
- * server response that explains the failure, and retry next cycle.
+ * Thank every snatched row not already logged as thanked, verifying membership
+ * before logging. A successful `add` already returns the thankers list, so we
+ * only spend a second `list` request when `add` didn't confirm us — this halves
+ * action spend against the hourly cap. On hitting the cap we stop the run
+ * immediately (the hourly alarm resumes next cycle). Always on, independent of
+ * dry-run (non-destructive).
  */
 async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
     const already = await thankedTids();
     for (const row of rows) {
         if (already.has(row.tid)) continue;
+
         const add = await thanksPost("add", row.tid); // fire the thank (idempotent)
-        const list = await thanksPost("list", row.tid); // read back to verify
-        if (listHasUid(list, uid)) {
+        if (!add.ok && add.rateLimited) {
+            await log("thanks-error", { tid: row.tid, name: "rate-limited — backing off; resumes next cycle" });
+            break;
+        }
+
+        // Fresh thank: `add` returns the list with us. Otherwise (already-thanked
+        // / error) confirm membership with one `list` read.
+        let inList = listHasUid(add, uid);
+        let list: ThanksResult | null = null;
+        if (!inList) {
+            list = await thanksPost("list", row.tid);
+            if (!list.ok && list.rateLimited) {
+                await log("thanks-error", { tid: row.tid, name: "rate-limited — backing off; resumes next cycle" });
+                break;
+            }
+            inList = listHasUid(list, uid);
+        }
+
+        if (inList) {
             await log("thanked", { tid: row.tid });
         } else {
             const detail = !add.ok
                 ? `add ${add.reason}`
                 : add.data.err
                   ? `add err: ${add.data.err}`
-                  : !list.ok
+                  : list && !list.ok
                     ? `list ${list.reason}`
                     : `not in list (add status=${add.data.status})`;
             await log("thanks-error", { tid: row.tid, name: detail });
