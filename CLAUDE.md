@@ -50,10 +50,15 @@ src/popup/                         log viewer + Clear + config fields
   `vite.config.ts` `build.rollupOptions.input` — a runtime `createDocument` URL
   isn't an auto-detected entry. Omit it and `dist/` lacks `offscreen.html` →
   `createDocument` 404s.
-- **Cross-browser build.** One `dist/` serves both. The `firefoxBackgroundScripts`
-  Vite plugin adds `background.scripts` (Firefox) next to `service_worker`
-  (Chrome); `browser_specific_settings.gecko` is in `manifest.json`. The
-  `offscreen` permission is Chrome-only — Firefox ignores it with a warning.
+- **Cross-browser build (per-target, same `dist/`).** `BROWSER` env selects the
+  target: `pnpm build:chrome` (default `pnpm build`) leaves crxjs's
+  `background.service_worker`; `pnpm build:firefox` rewrites it to an event page
+  (`background.scripts`, no `service_worker`) and strips the Chrome-only
+  `offscreen` permission — so neither browser logs a manifest warning. The
+  `crossBrowserManifest` Vite plugin does the Firefox rewrite in `writeBundle`.
+  `browser_specific_settings.gecko` stays in `manifest.json` (Chrome ignores it).
+  Release CI builds each target into `dist/` then zips it (Chrome `.zip` before
+  the Firefox build overwrites the manifest).
 - **`fetch` to filelist must set `credentials: "include"`** or the session +
   `cf_clearance` cookies don't attach → 302 to login.
 - **qBit needs localhost auth-bypass** enabled; the extension sends no qBit creds.

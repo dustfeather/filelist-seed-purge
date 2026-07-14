@@ -4,27 +4,36 @@ import fs from "node:fs";
 import path from "node:path";
 import manifest from "./src/manifest.json";
 
-// A single dist/ ships to both Chrome and Firefox. Chrome uses
-// background.service_worker; Firefox needs background.scripts. crxjs emits the
-// worker form, so mirror it into scripts for Firefox (Firefox ignores the
-// service_worker key, Chrome ignores scripts).
-function firefoxBackgroundScripts(): Plugin {
+// Same dist/ dir for both browsers; the BROWSER env var picks the target.
+// crxjs always emits a Chrome MV3 manifest (background.service_worker). For a
+// Firefox build we rewrite the background into an event page
+// (background.scripts) and drop the Chrome-only `offscreen` permission, so
+// neither browser logs a manifest warning. Default (unset/anything else) =
+// Chrome, where crxjs's output is already correct and we leave it untouched.
+const TARGET = process.env.BROWSER === "firefox" ? "firefox" : "chrome";
+
+function crossBrowserManifest(): Plugin {
     return {
-        name: "firefox-background-scripts",
+        name: "cross-browser-manifest",
         writeBundle(options) {
+            if (TARGET !== "firefox") return; // Chrome: crxjs output is correct as-is.
             const outDir = options.dir ?? "dist";
             const manifestPath = path.resolve(outDir, "manifest.json");
             const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-            if (m.background?.service_worker && !m.background.scripts) {
+            if (m.background?.service_worker) {
                 m.background.scripts = [m.background.service_worker];
-                fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + "\n");
+                delete m.background.service_worker; // Firefox MV3 has no service worker.
             }
+            if (Array.isArray(m.permissions)) {
+                m.permissions = m.permissions.filter((p: string) => p !== "offscreen");
+            }
+            fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + "\n");
         },
     };
 }
 
 export default defineConfig({
-    plugins: [crx({ manifest }), firefoxBackgroundScripts()],
+    plugins: [crx({ manifest }), crossBrowserManifest()],
     build: {
         outDir: "dist",
         rollupOptions: {

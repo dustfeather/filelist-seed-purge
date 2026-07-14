@@ -63,8 +63,6 @@ jobs:
                     fs.writeFileSync('src/manifest.json', JSON.stringify(m, null, 4) + '\n');
                   "
 
-            - run: pnpm run build
-
             - name: Tag release
               run: |
                   git config user.name "github-actions[bot]"
@@ -72,11 +70,17 @@ jobs:
                   git tag "${{ steps.version.outputs.tag }}"
                   git push origin "${{ steps.version.outputs.tag }}"
 
-            - name: Package Chrome extension
-              run: cd dist && zip -r ../filelist-seed-purge-chrome-${{ steps.version.outputs.tag }}.zip .
+            # Per-browser builds into the same dist/. Chrome first (zip it before
+            # the Firefox build overwrites the manifest), then Firefox.
+            - name: Build & package Chrome extension
+              run: |
+                  pnpm run build:chrome
+                  cd dist && zip -r ../filelist-seed-purge-chrome-${{ steps.version.outputs.tag }}.zip .
 
-            - name: Package Firefox extension
-              run: cd dist && zip -r ../filelist-seed-purge-firefox-${{ steps.version.outputs.tag }}.xpi .
+            - name: Build & package Firefox extension
+              run: |
+                  pnpm run build:firefox
+                  cd dist && zip -r ../filelist-seed-purge-firefox-${{ steps.version.outputs.tag }}.xpi .
 
             - name: Generate release notes
               run: |
