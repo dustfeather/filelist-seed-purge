@@ -218,13 +218,27 @@ async function thankedTids(): Promise<Set<string>> {
     return set;
 }
 
-/** POST one `action` to thanks.php for a torrent; returns the parsed JSON or null. */
-async function thanksPost(
-    action: "add" | "list",
-    tid: string,
-): Promise<{ status?: boolean; list?: string; err?: string } | null> {
+type ThanksJson = { status?: boolean; list?: string; err?: string };
+type ThanksResult =
+    | { ok: true; data: ThanksJson }
+    | { ok: false; reason: string };
+
+/** Collapse whitespace and cap a response body for a one-line log field. */
+function snippet(text: string): string {
+    const s = text.replace(/\s+/g, " ").trim();
+    return s.length > 140 ? `${s.slice(0, 140)}…` : s;
+}
+
+/**
+ * POST one `action` to thanks.php. On failure the reason distinguishes the
+ * cases that actually matter: a network throw, a non-2xx status (e.g. 302 to
+ * login, 403/503 from Cloudflare), or a 200 whose body isn't JSON (a login or
+ * challenge HTML page) — each carrying a snippet of what came back.
+ */
+async function thanksPost(action: "add" | "list", tid: string): Promise<ThanksResult> {
+    let resp: Response;
     try {
-        const resp = await fetch(THANKS_URL, {
+        resp = await fetch(THANKS_URL, {
             method: "POST",
             credentials: "include",
             headers: {
@@ -234,25 +248,30 @@ async function thanksPost(
             },
             body: `action=${action}&ajax=1&torrentid=${encodeURIComponent(tid)}`,
         });
-        if (!resp.ok) return null;
-        return await resp.json();
+    } catch (e) {
+        return { ok: false, reason: `network error: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    const text = await resp.text().catch(() => "");
+    if (!resp.ok) return { ok: false, reason: `HTTP ${resp.status}: ${snippet(text)}` };
+    try {
+        return { ok: true, data: JSON.parse(text) as ThanksJson };
     } catch {
-        return null;
+        return { ok: false, reason: `non-JSON body: ${snippet(text)}` };
     }
 }
 
 /** Does our uid appear in this thankers-list response? */
-function listHasUid(res: { list?: string } | null, uid: string): boolean {
+function listHasUid(res: ThanksResult, uid: string): boolean {
     // Thankers are `<a href='userdetails.php?id=UID'>`. Trailing quote anchors
     // the id so uid 110548 doesn't match a 1105489 prefix.
-    return !!res?.list?.includes(`userdetails.php?id=${uid}'`);
+    return res.ok && !!res.data.list?.includes(`userdetails.php?id=${uid}'`);
 }
 
 /**
  * Thank every snatched row not already logged as thanked, then verify against
  * the thankers list before logging. Always on, independent of dry-run
- * (non-destructive). Unverified rows log "thanks-error" carrying the server's
- * response (for diagnosis) and retry next cycle.
+ * (non-destructive). Unverified rows log "thanks-error" carrying the specific
+ * server response that explains the failure, and retry next cycle.
  */
 async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
     const already = await thankedTids();
@@ -263,13 +282,13 @@ async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
         if (listHasUid(list, uid)) {
             await log("thanked", { tid: row.tid });
         } else {
-            const detail = add?.err
-                ? `add err: ${add.err}`
-                : add === null
-                  ? "add: no/invalid response"
-                  : list === null
-                    ? "list: no/invalid response"
-                    : `not in list (add status=${add.status})`;
+            const detail = !add.ok
+                ? `add ${add.reason}`
+                : add.data.err
+                  ? `add err: ${add.data.err}`
+                  : !list.ok
+                    ? `list ${list.reason}`
+                    : `not in list (add status=${add.data.status})`;
             await log("thanks-error", { tid: row.tid, name: detail });
         }
         await sleep(THANKS_DELAY_MS);
