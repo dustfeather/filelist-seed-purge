@@ -17,11 +17,11 @@ jobs:
             contents: read
         uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v4
         with:
-            runner: arc-df-shared-workflows
+            runner: arc-df-filelist-seed-purge
 
     build:
         needs: tests
-        runs-on: arc-df-shared-workflows
+        runs-on: arc-df-filelist-seed-purge
         outputs:
             version: ${{ steps.version.outputs.version }}
             tag: ${{ steps.version.outputs.tag }}
@@ -113,7 +113,7 @@ jobs:
         needs: build
         uses: dustfeather/shared-workflows/.github/workflows/publish-chrome.yml@v4
         with:
-            runner: arc-df-shared-workflows
+            runner: arc-df-filelist-seed-purge
             zip-name: filelist-seed-purge-chrome-${{ needs.build.outputs.tag }}.zip
         secrets: inherit
 
@@ -121,7 +121,7 @@ jobs:
         needs: build
         uses: dustfeather/shared-workflows/.github/workflows/publish-firefox.yml@v4
         with:
-            runner: arc-df-shared-workflows
+            runner: arc-df-filelist-seed-purge
             xpi-name: filelist-seed-purge-firefox-${{ needs.build.outputs.tag }}.xpi
             source-name: source-${{ needs.build.outputs.tag }}.zip
             addon-id: filelist-seed-purge@extension

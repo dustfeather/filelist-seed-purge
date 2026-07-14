@@ -20,5 +20,5 @@ jobs:
             actions: read
         uses: dustfeather/shared-workflows/.github/workflows/claude.yml@v4
         with:
-            runner: arc-df-shared-workflows
+            runner: arc-df-filelist-seed-purge
         secrets: inherit
