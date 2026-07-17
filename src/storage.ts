@@ -12,6 +12,8 @@ const DEFAULTS: StorageData = {
         category: "auto-download",
         dryRun: true,
         minFreeSpaceGb: 100,
+        minSeedTimeHours: 49,
+        maxRatio: 2.1,
     },
     log: [],
     downloadedIds: [],

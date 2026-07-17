@@ -1,30 +1,20 @@
 import { storage } from "../storage";
-import { Config, LogAction, OffscreenRequest, OffscreenResponse, RssArticle, RssItems, SnatchRow } from "../types";
-import { parseSnatchDom, parseDetailsDom } from "../parse";
+import { Config, LogAction, RssArticle, RssItems } from "../types";
 
 const GIB = 1024 ** 3;
 
-const ALARM_NAME = "seed-purge";
-const CYCLE_MINUTES = 60;
-// qBit refreshes the filelist RSS feed ~every minute; match it. This alarm runs
-// ONLY the qBit-local downloadPass — never the filelist-scraping run() (which is
-// rate-limited and stays hourly).
-const DOWNLOAD_ALARM_NAME = "rss-download";
-const DOWNLOAD_CYCLE_MINUTES = 1;
-const PAGE_DELAY_MS = 1500;
+// Single cadence for the whole qBit-local flow (purge + RSS download). qBit
+// refreshes the filelist RSS feed ~every minute; the purge check is a cheap
+// torrents/info read, so both run together every minute.
+const ALARM_NAME = "seed-cycle";
+const CYCLE_MINUTES = 1;
 const THANKS_DELAY_MS = 1000;
-const MAX_PAGES = 100;
 
 const FILELIST_ORIGIN = "https://filelist.io";
-const SNATCHLIST_URL = `${FILELIST_ORIGIN}/snatchlist.php`;
-const DETAILS_URL = `${FILELIST_ORIGIN}/details.php`;
 const THANKS_URL = `${FILELIST_ORIGIN}/thanks.php`;
 
-const OFFSCREEN_URL = "src/offscreen/offscreen.html";
-
-/** Guards against a second run overlapping the current one. */
+/** Guards against a second cycle overlapping the current one. */
 let running = false;
-let downloading = false;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -47,8 +37,6 @@ async function log(
 async function setupAlarm(): Promise<void> {
     await chrome.alarms.clear(ALARM_NAME);
     chrome.alarms.create(ALARM_NAME, { periodInMinutes: CYCLE_MINUTES });
-    await chrome.alarms.clear(DOWNLOAD_ALARM_NAME);
-    chrome.alarms.create(DOWNLOAD_ALARM_NAME, { periodInMinutes: DOWNLOAD_CYCLE_MINUTES });
 }
 
 // qBit's WebUI rejects/warns on requests whose Origin doesn't match its own
@@ -99,42 +87,10 @@ async function syncQbitOriginRule(config: Config): Promise<void> {
     });
 }
 
-// ---- HTML parsing (cross-browser) --------------------------------------
-// Chrome MV3 runs the background as a service worker (no DOM) → parse in an
-// offscreen document. Firefox runs it as an event page (has DOM) and has no
-// chrome.offscreen API → parse inline. Feature-detect and branch.
-const HAS_OFFSCREEN = typeof chrome !== "undefined" && !!chrome.offscreen;
-
-async function ensureOffscreen(): Promise<void> {
-    if (!HAS_OFFSCREEN) return;
-    if (await chrome.offscreen.hasDocument()) return;
-    await chrome.offscreen.createDocument({
-        url: OFFSCREEN_URL,
-        reasons: [chrome.offscreen.Reason.DOM_PARSER],
-        justification: "Parse filelist.io HTML pages (no DOM in service worker).",
-    });
-}
-
-async function closeOffscreen(): Promise<void> {
-    if (!HAS_OFFSCREEN) return;
-    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
-}
-
-async function parseSnatchPage(html: string): Promise<SnatchRow[] | null> {
-    if (!HAS_OFFSCREEN) return parseSnatchDom(html); // Firefox event page
-    const req: OffscreenRequest = { target: "offscreen", kind: "snatch", html };
-    const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
-    return res?.kind === "snatch" ? res.rows : null;
-}
-
-async function parseDetailsName(html: string): Promise<string | null> {
-    if (!HAS_OFFSCREEN) return parseDetailsDom(html); // Firefox event page
-    const req: OffscreenRequest = { target: "offscreen", kind: "details", html };
-    const res = (await chrome.runtime.sendMessage(req)) as OffscreenResponse | undefined;
-    return res?.kind === "details" ? res.name : null;
-}
-
 // ---- filelist session ---------------------------------------------------
+// The extension no longer scrapes filelist to decide deletions (that's now a
+// pure qBit `seeding_time` check). The session is only used to say-thanks for a
+// torrent as it's removed — a courtesy POST that needs the logged-in uid.
 
 async function getUid(): Promise<string | null> {
     const cookie = await chrome.cookies.get({ url: FILELIST_ORIGIN, name: "uid" });
@@ -149,6 +105,10 @@ interface QbitTorrent {
     category: string;
     /** 0..1 download fraction; 1 = fully downloaded (seeding or stopped-complete). */
     progress: number;
+    /** Total seconds spent seeding (cumulative, persisted). Present on torrents/info. */
+    seeding_time?: number;
+    /** Share ratio (uploaded / downloaded). Present on torrents/info. */
+    ratio?: number;
     /** Bytes still to download (0 once complete). Present on torrents/info. */
     amount_left?: number;
 }
@@ -167,6 +127,27 @@ async function fetchQbitTorrents(config: Config): Promise<QbitTorrent[] | null> 
         if (!resp.ok) return null;
         const all = (await resp.json()) as QbitTorrent[];
         return all.filter((t) => t.progress === 1);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Read a torrent's `comment` (torrents/properties) and pull the filelist id out
+ * of it. filelist .torrent files carry their details/download URL in the comment
+ * (…filelist.io/details.php?id=N), which is the tid say-thanks needs. Returns
+ * null when qBit is unreachable or the comment holds no filelist id.
+ */
+async function qbitFilelistId(config: Config, hash: string): Promise<string | null> {
+    const base = config.qbitUrl.replace(/\/+$/, "");
+    try {
+        const resp = await fetch(`${base}/api/v2/torrents/properties?hash=${encodeURIComponent(hash)}`);
+        if (!resp.ok) return null;
+        const data = (await resp.json()) as { comment?: string };
+        const comment = data.comment ?? "";
+        if (!/filelist|details\.php|download\.php/i.test(comment)) return null;
+        const m = comment.match(/[?&]id=(\d+)/);
+        return m ? m[1] : null;
     } catch {
         return null;
     }
@@ -261,73 +242,6 @@ async function fetchRssArticles(config: Config): Promise<RssArticle[] | null> {
     }
 }
 
-type MatchResult =
-    | { status: "match"; hash: string }
-    | { status: "skip-nomatch" | "skip-ambiguous" };
-
-/** exact trimmed → case-insensitive fallback → unique-or-skip. */
-function matchTorrent(torrents: QbitTorrent[], fullName: string): MatchResult {
-    const target = fullName.trim();
-    let hits = torrents.filter((t) => t.name.trim() === target);
-    if (hits.length === 0) {
-        const lower = target.toLowerCase();
-        hits = torrents.filter((t) => t.name.trim().toLowerCase() === lower);
-    }
-    if (hits.length === 0) return { status: "skip-nomatch" };
-    if (hits.length > 1) return { status: "skip-ambiguous" };
-    return { status: "match", hash: hits[0].hash };
-}
-
-// ---- snatchlist scrape --------------------------------------------------
-
-/**
- * Walk snatchlist pages until a page adds no new tids (wrap-around stop) or
- * MAX_PAGES. Returns null on session-expired / abort.
- */
-async function walkSnatchlist(uid: string): Promise<SnatchRow[] | null> {
-    const seen = new Set<string>();
-    const collected: SnatchRow[] = [];
-
-    for (let page = 0; page < MAX_PAGES; page++) {
-        if (page > 0) await sleep(PAGE_DELAY_MS);
-        const url = `${SNATCHLIST_URL}?id=${encodeURIComponent(uid)}&page=${page}`;
-        let resp: Response;
-        try {
-            resp = await fetch(url, { credentials: "include" });
-        } catch {
-            return null;
-        }
-        if (!resp.ok || resp.url.includes("login.php")) return null;
-
-        const html = await resp.text();
-        const rows = await parseSnatchPage(html);
-        if (rows === null) return null; // table absent → session expired
-
-        let added = 0;
-        for (const row of rows) {
-            if (seen.has(row.tid)) continue;
-            seen.add(row.tid);
-            collected.push(row);
-            added++;
-        }
-        if (added === 0) break; // wrapped back to an already-seen page
-    }
-    return collected;
-}
-
-/** Fetch a torrent's details page and return its full name (h4), or null. */
-async function fetchDetailsName(tid: string): Promise<string | null> {
-    const url = `${DETAILS_URL}?id=${encodeURIComponent(tid)}`;
-    try {
-        const resp = await fetch(url, { credentials: "include" });
-        if (!resp.ok) return null;
-        const html = await resp.text();
-        return await parseDetailsName(html);
-    } catch {
-        return null;
-    }
-}
-
 // ---- say thanks ---------------------------------------------------------
 // Replicates the details-page #thanks_button onclick (say_thanks(id)), which
 // POSTs `action=add` to thanks.php. The worker has no live page, so we fire the
@@ -339,9 +253,10 @@ async function fetchDetailsName(tid: string): Promise<string | null> {
 // (`action=list` → `{"list":"<a href='userdetails.php?id=UID'>...","status":true}`)
 // and checking our own uid is in it. Only then do we log "thanked".
 //
-// The server rejects duplicate thanks, so re-POSTing is a harmless no-op; the
-// log-based skip below is just an optimisation, and the list verify self-heals
-// any tid whose "thanked" entry has aged out of the 500-entry log.
+// We thank a torrent only as we remove it (live mode), not in bulk — so filelist
+// sees at most one action per purged torrent. The log-based dedup below keeps a
+// failed-delete retry from re-thanking, and the list verify self-heals any tid
+// whose "thanked" entry has aged out of the 500-entry log.
 
 /** tids already recorded as thanked in the log (skip re-processing). */
 async function thankedTids(): Promise<Set<string>> {
@@ -409,51 +324,116 @@ function listHasUid(res: ThanksResult, uid: string): boolean {
     return res.ok && !!res.data.list?.includes(`userdetails.php?id=${uid}'`);
 }
 
+type ThankOutcome = "thanked" | "error" | "rate-limited";
+
 /**
- * Thank each given row (Done torrents) not already logged as thanked, verifying membership
- * before logging. A successful `add` already returns the thankers list, so we
- * only spend a second `list` request when `add` didn't confirm us — this halves
- * action spend against the hourly cap. On hitting the cap we stop the run
- * immediately (the hourly alarm resumes next cycle). Always on, independent of
- * dry-run (non-destructive).
+ * Thank one tid, verifying membership before logging. A successful `add` already
+ * returns the thankers list, so we only spend a second `list` request when `add`
+ * didn't confirm us — this halves action spend against the hourly cap. Logs the
+ * outcome; returns "rate-limited" so the caller stops thanking for the cycle.
  */
-async function thankAll(rows: SnatchRow[], uid: string): Promise<void> {
-    const already = await thankedTids();
-    for (const row of rows) {
-        if (already.has(row.tid)) continue;
+async function thankOne(tid: string, uid: string): Promise<ThankOutcome> {
+    const add = await thanksPost("add", tid); // fire the thank (idempotent)
+    if (!add.ok && add.rateLimited) return "rate-limited";
 
-        const add = await thanksPost("add", row.tid); // fire the thank (idempotent)
-        if (!add.ok && add.rateLimited) {
-            await log("thanks-error", { tid: row.tid, name: "rate-limited — backing off; resumes next cycle" });
-            break;
+    // Fresh thank: `add` returns the list with us. Otherwise (already-thanked /
+    // error) confirm membership with one `list` read.
+    let inList = listHasUid(add, uid);
+    let list: ThanksResult | null = null;
+    if (!inList) {
+        list = await thanksPost("list", tid);
+        if (!list.ok && list.rateLimited) return "rate-limited";
+        inList = listHasUid(list, uid);
+    }
+
+    if (inList) {
+        await log("thanked", { tid });
+        return "thanked";
+    }
+    const detail = !add.ok
+        ? `add ${add.reason}`
+        : add.data.err
+          ? `add err: ${add.data.err}`
+          : list && !list.ok
+            ? `list ${list.reason}`
+            : `not in list (add status=${add.data.status})`;
+    await log("thanks-error", { tid, name: detail });
+    return "error";
+}
+
+// ---- purge --------------------------------------------------------------
+
+/** Seconds → compact qBit-style seed time, e.g. "2d 1h" / "3h 12m" / "5m". */
+function fmtSeedTime(sec: number): string {
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+}
+
+/**
+ * Delete every completed torrent in the category that trips either gate: qBit
+ * `seeding_time` has reached the configured hours (the qBit WebUI renders this as
+ * "seeded for 2d 1h"), OR `ratio` has reached maxRatio. Governed by dryRun: logs
+ * `would-purge` and deletes nothing when on. As each torrent is removed (live
+ * mode only) we say-thanks on filelist for it — best-effort, gated on being
+ * logged in and the torrent's comment carrying a filelist id; never blocks the
+ * delete.
+ */
+async function purgePass(config: Config): Promise<void> {
+    const torrents = await fetchQbitTorrents(config);
+    if (torrents === null) {
+        await log("abort", { name: `qBit unreachable at ${config.qbitUrl}` });
+        return;
+    }
+
+    const thresholdSec = Math.max(0, config.minSeedTimeHours) * 3600;
+    const maxRatio = config.maxRatio;
+    const isDue = (t: QbitTorrent): boolean =>
+        (t.seeding_time ?? 0) >= thresholdSec || (t.ratio ?? 0) >= maxRatio;
+    const due = torrents.filter(isDue);
+    await log("info", {
+        name: `purge: ${torrents.length} complete, ${due.length} due (seeded ≥ ${config.minSeedTimeHours}h or ratio ≥ ${maxRatio}), dryRun=${config.dryRun}`,
+    });
+    if (due.length === 0) return;
+
+    // Thanks needs a filelist session; deletion is qBit-local and doesn't.
+    const uid = await getUid();
+    const alreadyThanked = await thankedTids();
+    let thanksRateLimited = false;
+
+    for (const t of due) {
+        // Log both metrics + which gate tripped for context.
+        const gate = (t.seeding_time ?? 0) >= thresholdSec ? "time" : "ratio";
+        const human = `${fmtSeedTime(t.seeding_time ?? 0)} r${(t.ratio ?? 0).toFixed(2)} [${gate}]`;
+
+        if (config.dryRun) {
+            await log("would-purge", { name: t.name, seedTime: human, hash: t.hash });
+            continue;
         }
 
-        // Fresh thank: `add` returns the list with us. Otherwise (already-thanked
-        // / error) confirm membership with one `list` read.
-        let inList = listHasUid(add, uid);
-        let list: ThanksResult | null = null;
-        if (!inList) {
-            list = await thanksPost("list", row.tid);
-            if (!list.ok && list.rateLimited) {
-                await log("thanks-error", { tid: row.tid, name: "rate-limited — backing off; resumes next cycle" });
-                break;
+        // Say-thanks as part of removal (best-effort). Skip silently when we
+        // can't (no session, no filelist id, already thanked, or capped out).
+        const tid = await qbitFilelistId(config, t.hash);
+        if (tid && uid && !thanksRateLimited && !alreadyThanked.has(tid)) {
+            const outcome = await thankOne(tid, uid);
+            if (outcome === "rate-limited") {
+                thanksRateLimited = true;
+                await log("thanks-error", { tid, name: "rate-limited — backing off; resumes next cycle" });
+            } else {
+                alreadyThanked.add(tid);
             }
-            inList = listHasUid(list, uid);
+            await sleep(THANKS_DELAY_MS);
         }
 
-        if (inList) {
-            await log("thanked", { tid: row.tid });
+        const ok = await qbitDelete(config, t.hash);
+        if (ok) {
+            await log("purged", { tid: tid ?? "-", name: t.name, seedTime: human, hash: t.hash });
         } else {
-            const detail = !add.ok
-                ? `add ${add.reason}`
-                : add.data.err
-                  ? `add err: ${add.data.err}`
-                  : list && !list.ok
-                    ? `list ${list.reason}`
-                    : `not in list (add status=${add.data.status})`;
-            await log("thanks-error", { tid: row.tid, name: detail });
+            await log("abort", { tid: tid ?? "-", name: `delete failed: ${t.name}`, seedTime: human, hash: t.hash });
         }
-        await sleep(THANKS_DELAY_MS);
     }
 }
 
@@ -562,112 +542,35 @@ async function downloadPass(config: Config): Promise<void> {
     }
 }
 
-// ---- run flow -----------------------------------------------------------
+// ---- cycle --------------------------------------------------------------
 
-async function run(): Promise<void> {
+/**
+ * One qBit-local cycle: purge seed-time-expired torrents (which frees disk),
+ * then run the RSS download pass to refill. Guarded against overlapping ticks.
+ */
+async function runCycle(): Promise<void> {
     if (running) return;
     running = true;
     try {
         const config = await storage.getConfig();
-
         // Rewrite Origin on qBit-bound requests to match qBit's host (CSRF).
         await syncQbitOriginRule(config);
-
-        // 1. filelist session
-        const uid = await getUid();
-        if (!uid) {
-            await log("abort", { name: "not logged in (no filelist uid cookie)" });
-            return;
-        }
-
-        // 2. qBit torrent set
-        const torrents = await fetchQbitTorrents(config);
-        if (torrents === null) {
-            await log("abort", { name: `qBit unreachable at ${config.qbitUrl}` });
-            return;
-        }
-
-        // Spin up the offscreen parser before any HTML parsing.
-        await ensureOffscreen();
-
-        // 3. walk snatchlist
-        const rows = await walkSnatchlist(uid);
-        if (rows === null) {
-            await log("abort", { name: "session expired / snatchlist unavailable" });
-            return;
-        }
-
-        // 4. eligible = Seed Time Left === "done"
-        const done = rows.filter((r) => r.seedTimeLeft.trim().toLowerCase() === "done");
-        await log("info", { name: `run: ${rows.length} snatched, ${done.length} done, ${torrents.length} qBit-complete, dryRun=${config.dryRun}` });
-
-        // 5-7. per Done row: resolve full name, match, purge
-        for (const row of done) {
-            const fullName = await fetchDetailsName(row.tid);
-            if (fullName === null) {
-                await log("skip-fetcherror", { tid: row.tid, seedTime: row.seedTime });
-                continue;
-            }
-
-            const match = matchTorrent(torrents, fullName);
-            if (match.status !== "match") {
-                await log(match.status, { tid: row.tid, name: fullName, seedTime: row.seedTime });
-                continue;
-            }
-
-            if (config.dryRun) {
-                await log("would-purge", { tid: row.tid, name: fullName, seedTime: row.seedTime, hash: match.hash });
-                continue;
-            }
-
-            const ok = await qbitDelete(config, match.hash);
-            if (ok) {
-                await log("purged", { tid: row.tid, name: fullName, seedTime: row.seedTime, hash: match.hash });
-            } else {
-                await log("abort", { tid: row.tid, name: `delete failed: ${fullName}`, seedTime: row.seedTime, hash: match.hash });
-            }
-        }
-
-        // 8. say-thanks for the Done torrents, verified against the thankers
-        //    list before logging (dedup via log scan).
-        await thankAll(done, uid);
-    } finally {
-        await closeOffscreen();
-        running = false;
-    }
-
-    // Purge above may have freed space — try to refill immediately instead of
-    // waiting for the next 1-min tick. Guarded, so it no-ops if one's running.
-    void runDownloadPass();
-}
-
-/**
- * Standalone RSS download runner for the 1-min alarm. qBit-local only (no
- * filelist scraping / rate limits), so it's safe to run every minute. Guarded
- * against overlapping ticks and the run() tail-trigger.
- */
-async function runDownloadPass(): Promise<void> {
-    if (downloading) return;
-    downloading = true;
-    try {
-        const config = await storage.getConfig();
-        await syncQbitOriginRule(config);
+        await purgePass(config);
         await downloadPass(config);
     } finally {
-        downloading = false;
+        running = false;
     }
 }
 
 // ---- wiring -------------------------------------------------------------
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === ALARM_NAME) void run();
-    else if (alarm.name === DOWNLOAD_ALARM_NAME) void runDownloadPass();
+    if (alarm.name === ALARM_NAME) void runCycle();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
     void setupAlarm();
-    void run(); // immediate first pass (dry-run default, safe)
+    void runCycle(); // immediate first pass (dry-run default, safe)
 });
 
 chrome.runtime.onStartup.addListener(() => {

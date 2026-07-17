@@ -167,9 +167,8 @@ td.name {
     color: var(--accent);
 }
 
-.act-skip-nomatch,
-.act-skip-ambiguous,
-.act-skip-fetcherror {
+.act-skip-nospace,
+.act-skip-nosize {
     color: var(--muted);
 }
 

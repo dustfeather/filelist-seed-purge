@@ -25,6 +25,14 @@
             <span>Min free space (GiB)</span>
             <input type="number" id="minFreeSpaceGb" min="0" step="1" autocomplete="off" />
         </label>
+        <label class="field">
+            <span>Min seed time (hours)</span>
+            <input type="number" id="minSeedTimeHours" min="0" step="1" autocomplete="off" />
+        </label>
+        <label class="field">
+            <span>Max ratio</span>
+            <input type="number" id="maxRatio" min="0" step="0.1" autocomplete="off" />
+        </label>
         <label class="check">
             <input type="checkbox" id="dryRun" />
             <span>Dry-run (log only, never delete or download)</span>

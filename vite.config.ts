@@ -7,9 +7,9 @@ import manifest from "./src/manifest.json";
 // Same dist/ dir for both browsers; the BROWSER env var picks the target.
 // crxjs always emits a Chrome MV3 manifest (background.service_worker). For a
 // Firefox build we rewrite the background into an event page
-// (background.scripts) and drop the Chrome-only `offscreen` permission, so
-// neither browser logs a manifest warning. Default (unset/anything else) =
-// Chrome, where crxjs's output is already correct and we leave it untouched.
+// (background.scripts), so neither browser logs a manifest warning. Default
+// (unset/anything else) = Chrome, where crxjs's output is already correct and
+// we leave it untouched.
 const TARGET = process.env.BROWSER === "firefox" ? "firefox" : "chrome";
 
 function crossBrowserManifest(): Plugin {
@@ -24,9 +24,6 @@ function crossBrowserManifest(): Plugin {
                 m.background.scripts = [m.background.service_worker];
                 delete m.background.service_worker; // Firefox MV3 has no service worker.
             }
-            if (Array.isArray(m.permissions)) {
-                m.permissions = m.permissions.filter((p: string) => p !== "offscreen");
-            }
             fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + "\n");
         },
     };
@@ -36,12 +33,5 @@ export default defineConfig({
     plugins: [crx({ manifest }), crossBrowserManifest()],
     build: {
         outDir: "dist",
-        rollupOptions: {
-            // Offscreen doc is loaded at runtime via chrome.offscreen, not from
-            // the manifest, so crxjs won't auto-detect it — declare it here.
-            input: {
-                offscreen: "src/offscreen/offscreen.html",
-            },
-        },
     },
 });

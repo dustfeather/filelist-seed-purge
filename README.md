@@ -1,48 +1,49 @@
 # FileList Seed-Purge
 
-A **Chrome & Firefox** MV3 extension that runs in the background, scrapes your
-[filelist.io](https://filelist.io) **snatchlist** for torrents whose seeding
-requirement is met (`Seed Time Left = Done`), and deletes the matching torrent
-**and its data** from a local [qBittorrent](https://www.qbittorrent.org/) via its
-WebUI API.
+A **Chrome & Firefox** MV3 extension that runs in the background, watches a local
+[qBittorrent](https://www.qbittorrent.org/) via its WebUI API, and deletes each
+completed torrent **and its data** once it trips either gate: seeded long enough
+(`seeding_time` past a threshold — the qBit WebUI's "seeded for 2d 1h") **or**
+`ratio` past a threshold (default 2.1). As it removes a torrent it says-thanks on
+[filelist.io](https://filelist.io) for it.
 
-It exists because filelist sits behind Cloudflare + 2FA — a headless/server-side
-login is blocked, so only the logged-in browser holds a live session. The
-extension reuses that session directly from the background.
+filelist sits behind Cloudflare + 2FA — a headless/server-side login is blocked,
+so only the logged-in browser holds a live session. The extension reuses that
+session directly from the background for the say-thanks POST.
 
 ## How it works
 
-Every 60 minutes (via `chrome.alarms`) the background service worker:
+Every minute (via `chrome.alarms`) the background service worker runs one cycle:
 
-1. Reads the filelist `uid` cookie (`chrome.cookies`). Missing → aborts, logs
-   "not logged in".
-2. `GET {qBit}/api/v2/torrents/info?category=<cat>` and keeps only
-   **completed** torrents (`progress === 1`). Unreachable → aborts.
-3. Walks `snatchlist.php?id=<uid>&page=N` with `credentials: "include"`, 1.5 s
-   between pages, stopping when a page adds no new torrent IDs (the snatchlist
-   wraps to page 1 past the end) or at `MAX_PAGES = 100`.
-4. Selects rows where `Seed Time Left === "Done"`.
-5. For each, fetches `details.php?id=<tid>` to read the full torrent name from the
-   page header (`.cblock-header h4`) — the snatchlist name column is truncated.
-6. Matches that name against the qBit set: exact (trimmed) → case-insensitive
-   fallback → **unique-or-skip**. Zero matches → `skip-nomatch`; more than one →
-   `skip-ambiguous`.
-7. On a unique match: if **dry-run** is on, logs `would-purge`; otherwise
-   `POST /api/v2/torrents/delete` with `deleteFiles=true`.
+**Purge**
 
-HTML parsing is cross-browser: on Chrome the worker is a DOM-less service worker,
-so parsing runs in a `chrome.offscreen` document; on Firefox the background is an
-event page (which has a DOM), so it parses inline. The worker feature-detects
-`chrome.offscreen` and branches automatically.
+1. `GET {qBit}/api/v2/torrents/info?category=<cat>` and keeps only **completed**
+   torrents (`progress === 1`). Unreachable → aborts.
+2. Selects the ones that trip either gate: `seeding_time` (seconds) at least
+   `minSeedTimeHours × 3600`, **or** `ratio` at least `maxRatio` (default 2.1).
+3. For each: if **dry-run** is on, logs `would-purge`. Otherwise it says-thanks
+   for the torrent (best-effort — see below) then `POST /api/v2/torrents/delete`
+   with `deleteFiles=true`.
+
+**Say-thanks** (live mode only, as part of removal — never a bulk sweep):
+
+- Reads the torrent's `comment` (`GET /api/v2/torrents/properties?hash=<hash>`);
+  filelist .torrent files carry their `details.php?id=N` URL there → the tid.
+- With the filelist `uid` cookie (`chrome.cookies`) present, POSTs `thanks.php`
+  and **verifies** membership in the thankers list before logging `thanked`.
+- No tid in the comment, not logged in, or already thanked → skip; the delete
+  still happens. filelist's hourly action cap backs off gracefully.
+
+The same cycle then runs the FreeLeech RSS auto-download pass (see the RSS
+section below). It's all qBit WebUI API + one JSON `thanks.php` POST — nothing
+scrapes HTML, so there's no offscreen document or DOM parser.
 
 ### Safety
 
-- **Dry-run is ON by default.** Nothing is deleted until you turn it off in the
-  popup. In dry-run, eligible torrents log `would-purge` instead.
-- Matching is **unique-or-skip**: an ambiguous or missing name is skipped, never
-  guessed. A parsing regression fails safe (rows skip; nothing is mis-deleted).
+- **Dry-run is ON by default.** Nothing is deleted (and no thanks are sent) until
+  you turn it off in the popup. In dry-run, eligible torrents log `would-purge`.
 - Only torrents in the configured category, already fully downloaded, are ever
-  considered.
+  considered — and only past the seed-time threshold.
 
 ## Install
 
@@ -77,11 +78,14 @@ Then load `dist/` unpacked as above.
 
 ## Configure (popup)
 
-| Field      | Default                  | Notes                                        |
-|------------|--------------------------|----------------------------------------------|
-| qBit URL   | `http://127.0.0.1:8181`  | WebUI base URL.                              |
-| Category   | `auto-download`          | Only this qBit category is matched/purged.   |
-| Dry-run    | **on**                   | Off = live deletes. Badge turns red (LIVE).  |
+| Field              | Default                 | Notes                                        |
+|--------------------|-------------------------|----------------------------------------------|
+| qBit URL           | `http://127.0.0.1:8181` | WebUI base URL.                              |
+| Category           | `auto-download`         | Only this qBit category is purged / downloaded into. |
+| Min free space (GiB) | `100`                 | RSS auto-download floor.                     |
+| Min seed time (hours) | `49`                 | Purge gate: `seeding_time` past this (49h = 2d 1h). |
+| Max ratio          | `2.1`                   | Purge gate: `ratio` at/above this. OR'd with seed time. |
+| Dry-run            | **on**                  | Off = live deletes + downloads. Badge turns red (LIVE). |
 
 The popup is otherwise a read-only log viewer with a **Clear** button.
 
@@ -89,7 +93,7 @@ The popup is otherwise a read-only log viewer with a **Clear** button.
 
 Kept in `chrome.storage.local`, ring-capped to 500 entries. Each entry:
 `{ ts, tid, name, seedTime, action, hash? }`, where `action` is one of
-`purged | would-purge | skip-nomatch | skip-ambiguous | skip-fetcherror | abort | info`.
+`purged | would-purge | thanked | thanks-error | downloaded | would-download | skip-nospace | skip-nosize | abort | info`.
 
 ## Development
 

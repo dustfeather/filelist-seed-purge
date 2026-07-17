@@ -2,12 +2,11 @@
     "manifest_version": 3,
     "name": "FileList Seed-Purge",
     "version": "1.0.0",
-    "description": "Deletes filelist.io torrents whose seeding is Done from local qBittorrent.",
+    "description": "Deletes local qBittorrent torrents once their seeding time passes a threshold.",
     "permissions": [
         "storage",
         "alarms",
         "cookies",
-        "offscreen",
         "declarativeNetRequestWithHostAccess"
     ],
     "host_permissions": [
