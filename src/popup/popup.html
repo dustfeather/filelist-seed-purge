@@ -21,9 +21,13 @@
             <span>Category</span>
             <input type="text" id="category" spellcheck="false" autocomplete="off" />
         </label>
+        <label class="field">
+            <span>Min free space (GiB)</span>
+            <input type="number" id="minFreeSpaceGb" min="0" step="1" autocomplete="off" />
+        </label>
         <label class="check">
             <input type="checkbox" id="dryRun" />
-            <span>Dry-run (log only, never delete)</span>
+            <span>Dry-run (log only, never delete or download)</span>
         </label>
     </section>
 

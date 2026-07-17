@@ -4,6 +4,7 @@ import { Config, LogEntry } from "../types";
 
 const qbitUrlEl = document.getElementById("qbitUrl") as HTMLInputElement;
 const categoryEl = document.getElementById("category") as HTMLInputElement;
+const minFreeSpaceGbEl = document.getElementById("minFreeSpaceGb") as HTMLInputElement;
 const dryRunEl = document.getElementById("dryRun") as HTMLInputElement;
 const dryBadgeEl = document.getElementById("dryBadge") as HTMLSpanElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
@@ -33,6 +34,7 @@ function renderBadge(dryRun: boolean): void {
 function renderConfig(config: Config): void {
     qbitUrlEl.value = config.qbitUrl;
     categoryEl.value = config.category;
+    minFreeSpaceGbEl.value = String(config.minFreeSpaceGb);
     dryRunEl.checked = config.dryRun;
     renderBadge(config.dryRun);
 }
@@ -72,10 +74,12 @@ function renderLog(log: LogEntry[]): void {
 }
 
 async function saveConfig(): Promise<void> {
+    const minFree = Number.parseInt(minFreeSpaceGbEl.value, 10);
     const config: Config = {
         qbitUrl: qbitUrlEl.value.trim() || "http://127.0.0.1:8181",
         category: categoryEl.value.trim() || "auto-download",
         dryRun: dryRunEl.checked,
+        minFreeSpaceGb: Number.isFinite(minFree) && minFree >= 0 ? minFree : 100,
     };
     await storage.setConfig(config);
     renderBadge(config.dryRun);
@@ -83,6 +87,7 @@ async function saveConfig(): Promise<void> {
 
 qbitUrlEl.addEventListener("change", saveConfig);
 categoryEl.addEventListener("change", saveConfig);
+minFreeSpaceGbEl.addEventListener("change", saveConfig);
 dryRunEl.addEventListener("change", saveConfig);
 
 clearBtn.addEventListener("click", async () => {

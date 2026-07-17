@@ -7,7 +7,8 @@
         "storage",
         "alarms",
         "cookies",
-        "offscreen"
+        "offscreen",
+        "declarativeNetRequestWithHostAccess"
     ],
     "host_permissions": [
         "https://filelist.io/*",
