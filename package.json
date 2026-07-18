@@ -7,8 +7,8 @@
     "scripts": {
         "dev": "vite",
         "build": "tsc && vite build",
-        "build:chrome": "tsc && BROWSER=chrome vite build",
-        "build:firefox": "tsc && BROWSER=firefox vite build",
+        "build:chrome": "node scripts/stamp-version.mjs && tsc && BROWSER=chrome vite build && node scripts/pack.mjs chrome",
+        "build:firefox": "node scripts/stamp-version.mjs && tsc && BROWSER=firefox vite build && node scripts/pack.mjs firefox",
         "typecheck": "tsc --noEmit",
         "prepare": "git config core.hooksPath .githooks || true"
     },
