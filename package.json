@@ -16,7 +16,7 @@
         "@crxjs/vite-plugin": "^2.7.1",
         "@types/chrome": "^0.2.0",
         "typescript": "^7.0.2",
-        "vite": "^8.1.4"
+        "vite": "^8.1.5"
     },
     "pnpm": {
         "onlyBuiltDependencies": [
