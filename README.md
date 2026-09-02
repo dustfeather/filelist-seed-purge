@@ -1,5 +1,7 @@
 # FileList Seed-Purge
 
+[![Release](https://github.com/dustfeather/filelist-seed-purge/actions/workflows/release.yml/badge.svg)](https://github.com/dustfeather/filelist-seed-purge/actions/workflows/release.yml)
+
 A **Chrome & Firefox** MV3 extension that runs in the background, watches a local
 [qBittorrent](https://www.qbittorrent.org/) via its WebUI API, and deletes each
 completed torrent **and its data** once it trips either gate: seeded long enough
