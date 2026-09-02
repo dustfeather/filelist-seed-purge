@@ -1,29 +1,32 @@
 {
-    "name": "filelist-seed-purge",
-    "version": "1.0.0",
-    "private": true,
-    "type": "module",
-    "description": "Private MV3 extension: purge Done-seeding filelist.io torrents from local qBittorrent.",
-    "scripts": {
-        "dev": "vite",
-        "build": "tsc && vite build",
-        "build:chrome": "node scripts/stamp-version.mjs && tsc && BROWSER=chrome vite build && node scripts/pack.mjs chrome",
-        "build:firefox": "node scripts/stamp-version.mjs && tsc && BROWSER=firefox vite build && node scripts/pack.mjs firefox",
-        "typecheck": "tsc --noEmit",
-        "prepare": "git config core.hooksPath .githooks || true"
-    },
-    "devDependencies": {
-        "@crxjs/vite-plugin": "^2.7.1",
-        "@types/chrome": "^0.2.0",
-        "typescript": "^7.0.2",
-        "vite": "^8.1.4"
-    },
-    "pnpm": {
-        "onlyBuiltDependencies": [
-            "esbuild"
-        ],
-        "overrides": {
-            "rollup@>=2 <2.80": ">=2.80.0"
-        }
+  "name": "filelist-seed-purge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Private MV3 extension: purge Done-seeding filelist.io torrents from local qBittorrent.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:chrome": "node scripts/stamp-version.mjs && tsc && BROWSER=chrome vite build && node scripts/pack.mjs chrome",
+    "build:firefox": "node scripts/stamp-version.mjs && tsc && BROWSER=firefox vite build && node scripts/pack.mjs firefox",
+    "typecheck": "tsc --noEmit",
+    "prepare": "git config core.hooksPath .githooks || true"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@types/chrome": "^0.2.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "overrides": {
+      "rollup@>=2 <2.80": ">=2.80.0",
+      "brace-expansion": ">=5.0.9",
+      "immutable": ">=5.1.8",
+      "nanoid": ">=3.3.18"
     }
+  }
 }
