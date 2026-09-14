@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
     release:
-        uses: dustfeather/shared-workflows/.github/workflows/release-extension.yml@v5
+        uses: dustfeather/shared-workflows/.github/workflows/release-extension.yml@v6
         with:
             runner: arc-df-filelist-seed-purge
             targets: '["chrome","firefox"]'
